@@ -1,0 +1,573 @@
+---
+title: "EDA and Visualisation"
+author: 'Rivyesch Ranjan'
+date: "2023-02-25"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# install.packages("hrbrthemes")
+
+# Importing libraries and functions for plotting
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(tidyr)
+library(greybox)
+library(dplyr)
+require(Information)
+library(corrplot)
+library(car)
+library(glmnet)
+library(cluster)
+source("Rfunctions.R")
+```
+
+```{r}
+# Preliminary inspection of raw data
+
+# Loading raw data and store in variable named rawData
+rawData <- read.csv("airlinesData81.csv", stringsAsFactors = TRUE)
+class(rawData)
+
+# Find dimensions (size and number of variables in data)
+dim(rawData)
+nrow(rawData)
+ncol(rawData)
+
+# Names of variables in data.frame
+names(rawData)
+```
+
+```{r}
+# Check for missing values and removes rows with NA (initially only columns related to time contained NA values)
+cleanData <- na.omit(rawData)
+
+# Dropped 20 rows
+```
+
+```{r}
+# Removing those ordinal factors with rating of 0 (invalid choice since response scale is from 1-5)
+
+# Column number of all factor variables (ordinal)
+factor_var <- c(7:20)
+
+# Replace 0 with NA in columns with factors (ordinal)
+cleanData[, factor_var] <- lapply(cleanData[, factor_var], function(x) ifelse(x == 0, NA, x))
+
+# Remove NAs which were initially factor 0 
+cleanData <- na.omit(cleanData)
+
+# Dropped a further 803 rows
+# In total dropped 823 rows from the data set which is 7.98% of the total data set
+```
+
+```{r}
+# Converting all ordinal feature columns to factors
+cleanData[,factor_var] <- lapply(cleanData[,factor_var] , as.ordered)
+summary(cleanData)
+```
+
+```{r}
+# Visualising survey responses
+
+surveyData <- cleanData[7:20]
+
+survey <- as.data.frame(summary(surveyData))
+survey <- separate(data = survey, col = Freq, into = c("survey_response", "survey_count"), sep = ":")
+survey <- survey[,-1]
+colnames(survey)[1] <- "survey_factor"
+ 
+ggplot(survey, aes(fill=survey_response, y=survey_count, x=survey_response)) + geom_text(aes(label=survey_count), position=position_dodge(width=0.9), hjust= -0.25, size=2.5) +
+    geom_bar(position="dodge", stat="identity") + labs(x=NULL) + coord_flip() + 
+    scale_fill_viridis(discrete = T, option = "A") +
+    facet_wrap(~survey_factor, shrink = FALSE, scales = "free") +
+    theme_ipsum() +
+    theme(legend.position="none", panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), panel.spacing.x = unit(1, "lines")) + 
+    xlab("") + ylab("")
+```
+
+
+```{r}
+# Group by count using dplyr
+agg_tbl <- cleanData %>% group_by(satisfaction) %>% 
+  summarise(total_count=n(),
+            .groups = 'drop')
+agg_tbl$labels <- (agg_tbl$total_count/nrow(cleanData)) * 100
+agg_tbl$labels <- paste(round(agg_tbl$labels, 2), "%", sep="")
+
+# Convert tibble to df
+df_satisfaction <- agg_tbl %>% as.data.frame()
+
+# Basic piechart
+ggplot(df_satisfaction, aes(x="", y=total_count, fill=satisfaction)) +
+  geom_bar(stat="identity", width=1) + geom_text(aes(label = labels),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar("y", start=0) + theme(legend.position="bottom")
+
+# There are more than twice the number of people that are neutral/dissatisfied compared to satisfied
+# Target variable is imbalanced - target class has an uneven distribution of observations
+```
+
+```{r}
+# Distribution of satisfaction over the population based on gender
+cc_barplot(Data = cleanData, "Gender","satisfaction", freq = "count")
+```
+
+```{r}
+# Distribution of satisfaction over the customer type
+cc_barplot(Data = cleanData, "Customer.Type","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on age
+install.packages("janitor")
+library(janitor)
+age_satisfaction <- data.frame(tabyl(cleanData, Age, satisfaction))
+
+library(tidyr)
+data_long <- gather(age_satisfaction, key="variable", value = "value", -Age)
+
+ggplot(data_long, aes(Age, value, color = variable)) +
+  geom_line() + theme(legend.position="bottom")
+```
+
+```{r}
+# Distribution of satisfaction over the population based on type of travel
+cc_barplot(Data = cleanData, "Type.of.Travel","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied depending on the travel class
+cc_barplot(Data = cleanData, "Class","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on the flight distance traveled
+dist_satisfaction <- data.frame(tabyl(cleanData, Flight.Distance, satisfaction))
+
+data_long <- gather(dist_satisfaction, key="variable", value = "value", -Flight.Distance)
+
+ggplot(data_long, aes(Flight.Distance, value, color = variable)) +
+  geom_line() +theme(legend.position="bottom")
+```
+
+```{r}
+# Number of people satisfied based on the inflight wifi service
+cc_barplot(Data = cleanData, "Inflight.wifi.service","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on the departure arrival time convenience
+cc_barplot(Data = cleanData, "Departure.Arrival.time.convenient","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on the ease of online booking
+cc_barplot(Data = cleanData, "Ease.of.Online.booking","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on the gate location
+cc_barplot(Data = cleanData, "Gate.location","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on the food and drinks
+cc_barplot(Data = cleanData, "Food.and.drink","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on online boarding
+cc_barplot(Data = cleanData, "Online.boarding","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on seat comfort
+cc_barplot(Data = cleanData, "Seat.comfort","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on inflight entertainment
+cc_barplot(Data = cleanData, "Inflight.entertainment","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on onboard service
+cc_barplot(Data = cleanData, "On.board.service","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on leg room
+cc_barplot(Data = cleanData, "Leg.room.service","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on baggage handling
+cc_barplot(Data = cleanData, "Baggage.handling","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on check-in service
+cc_barplot(Data = cleanData, "Checkin.service","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on in-flight service
+cc_barplot(Data = cleanData, "Inflight.service","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied based on cleanliness
+cc_barplot(Data = cleanData, "Cleanliness","satisfaction", freq = "count")
+```
+
+```{r}
+# Number of people satisfied depending on the departure delay in minutes
+dep_delay_satisfaction <- data.frame(tabyl(cleanData, Departure.Delay.in.Minutes, satisfaction))
+
+data_long <- gather(dep_delay_satisfaction, key="variable", value = "value", -Departure.Delay.in.Minutes)
+
+ggplot(data_long, aes(Departure.Delay.in.Minutes, value, color = variable)) +
+  geom_line()
+
+# Box plot would be a good option
+```
+
+```{r}
+# Number of people satisfied depending on the arrival delay in minutes
+arr_delay_satisfaction <- data.frame(tabyl(cleanData, Arrival.Delay.in.Minutes, satisfaction))
+
+data_long <- gather(arr_delay_satisfaction, key="variable", value = "value", -Arrival.Delay.in.Minutes)
+
+ggplot(data_long, aes(Arrival.Delay.in.Minutes, value, color = variable)) +
+  geom_line()
+```
+
+```{r}
+# Creating the plot
+plot(cleanData$Departure.Delay.in.Minutes, cleanData$Arrival.Delay.in.Minutes, pch = 19, col = "lightblue")
+
+# Regression line
+abline(lm(cleanData$Arrival.Delay.in.Minutes ~ cleanData$Departure.Delay.in.Minutes), col = "red", lwd = 3)
+
+# Pearson correlation
+text(paste("Correlation:", round(cor(cleanData$Departure.Delay.in.Minutes, cleanData$Arrival.Delay.in.Minutes), 2)), x = 550, y = 650)
+```
+
+```{r}
+# Conditional probability of type of travel given class
+cc_barplot(Data = cleanData, "Class","Type.of.Travel", freq = "relfreq")
+```
+
+```{r}
+# Violin plot of flight distance based on type of travel
+ggplot(cleanData, aes(x = Type.of.Travel, y = Flight.Distance)) +
+  geom_violin()
+```
+
+```{r}
+cc_barplot(Data = cleanData, "Seat.comfort","Leg.room.service", freq = "relfreq")
+```
+
+```{r}
+cc_barplot(Data = cleanData, "Ease.of.Online.booking","Online.boarding", freq = "relfreq")
+```
+
+```{r}
+boxplot(cleanData$Departure.Delay.in.Minutes)
+cc_hist(cleanData,"Departure.Delay.in.Minutes", "satisfaction", breaks=50)
+require(lattice)
+densityplot(~ Departure.Delay.in.Minutes, data = cleanData, groups = satisfaction, auto.key=TRUE)
+```
+
+```{r}
+# Information Value (IV) of all explanatory features in the data set 
+
+# Create a Boolean variable that is TRUE when satisfaction = "satisfied"
+y <- cleanData$satisfaction=="satisfied"
+class(y)
+
+# Multiplying by 1 renders y a numerical variable
+y <- 1*y
+class(y)
+
+# Creation/ addition of new variable called "class" in data.frame
+IVData <- cleanData
+IVData$satisfaction <- y
+
+IV <- create_infotables(data=IVData[, ], y="satisfaction", bins = 5)
+
+IV$Summary
+
+# Based on the IV table results,
+# Top variables that offer the most discriminatory power in order is online boarding, inflight wifi 
+# service, class, type of travel and inflight entertainment.
+# The other variables that also have relatively high IV is seat comfort, leg room service, on board service # and cleanliness.
+# The variables that offer the least in terms of discriminatory power is gender, departure arrival time 
+# convenient, departure delay in minutes, arrival delay in minutes and gate location. 
+```
+
+```{r}
+# Finding correlation between independent features and target variable
+# Finding multicollinearity that exist within the features in the data set
+
+assoc(cleanData)
+
+corrplot(association(IVData)$value, method="color", type="upper", col=colorRampPalette(c("blue","white","red"))(100), tl.col = "black")
+```
+
+```{r}
+# Transforming the data to include dummy variables for each of the ordinal features and categorical features
+
+cat_vars <- cleanData[, sapply(cleanData, is.factor)][,-19]
+xfactors <- model.matrix(cleanData$satisfaction ~ ., cat_vars)[, -1]
+
+# Creating a matrix of all the independent variables (features) after including dummy variables
+x <- as.matrix(data.frame(cleanData$Age, cleanData$Flight.Distance, cleanData$Departure.Delay.in.Minutes, cleanData$Arrival.Delay.in.Minutes, xfactors))
+```
+
+```{r}
+# Variance Influence Factor (VIF) to identify multicollinearity
+
+# Create the formula for the linear regression model
+formula <- as.formula(paste(names(cleanData)[23], paste(names(cleanData)[7:20], collapse = "+"), sep = "~"))
+
+vif_model <- glm(IVData$satisfaction ~ ., data = data.frame(x), family = binomial(link = "logit"))
+
+#calculate the VIF for each predictor variable in the model
+vif <- vif(vif_model)
+```
+
+```{r}
+# Lasso regression (alpha=1)
+set.seed(8)
+
+glmmod <- glmnet(x, y=as.factor(cleanData$satisfaction), alpha=1, family="binomial")
+
+# Plot variable coefficients vs. shrinkage parameter lambda.
+plot(glmmod, xvar="lambda")
+
+# Splitting the data into train and test set using a proportion of 80:20
+y <- IVData$satisfaction
+random.id <- sample(1:nrow(x))
+train <- sample(random.id, nrow(x) * 0.8)
+test <- random.id[-train]
+y.test <- y[test]
+
+lasso_reg_cv <- cv.glmnet(x = x[train,], y = y[train], alpha=1, family="binomial", nfolds = 10)
+plot(lasso_reg_cv)
+
+lasso_fit <- glmnet(x = x[train,], y = y[train], alpha=1, family="binomial")
+
+lasso_pred_min <- predict(lasso_fit, s = lasso_reg_cv$lambda.min, newx = x[test,])
+mean((lasso_pred_min - y.test)^2)
+
+lasso_pred_1se <- predict(lasso_fit, s = lasso_reg_cv$lambda.1se, newx = x[test,])
+mean((lasso_pred_1se - y.test)^2)
+
+# Select lambda.1se since MSE for lambda.1se is smaller than MSE for lambda.min
+lasso_pred_coeff <- predict(lasso_fit, s = lasso_reg_cv$lambda.1se, type = "coefficients")
+lasso_pred_coeff
+```
+
+```{r}
+# Elastic Net
+
+# Create a list of alpha values to vary (0, 0.2, 0.4, 0.6, 0.8, 1)
+alpha_grid <- seq(0, 1, by=0.1)
+# Create a list of lambda to test the regularisation model
+lambda_grid <- 10^seq(10, -2, length = 100)
+
+cv_results <- vector("double", length(alpha_grid))
+position = 1
+
+# Finding the best lambda value and hence optimal regularisation model for each alpha value
+for (i in alpha_grid){
+  elastic_reg_cv <- cv.glmnet(x = x[train,], y = y[train], alpha = i, family="binomial", nfolds = 10)
+  elastic_fit <- glmnet(x = x[train,], y = y[train], alpha = i, family="binomial")
+  
+  elastic_pred_1se <- predict(elastic_fit, s=elastic_reg_cv$lambda.1se, newx = x[test,])
+  result_1se <- mean((elastic_pred_1se - y.test)^2)
+  
+  elastic_pred_min <- predict(elastic_fit, s=elastic_reg_cv$lambda.min, newx = x[test,])
+  result_min <- mean((elastic_pred_min - y.test)^2)
+  
+  if (result_1se < result_min){
+    cv_results[position] <- result_1se
+  } else {
+    cv_results[position] <- result_min
+  }
+  
+  position = position + 1
+
+}
+
+plot(alpha_grid, cv_results, type="l", xlab="alpha", ylab="MSE for Elastic Net using optimal lambda")
+```
+
+```{r}
+el_reg_cv <- cv.glmnet(x = x[train,], y = y[train], alpha=0.6, family="binomial", nfolds = 10)
+plot(el_reg_cv)
+
+el_fit <- glmnet(x = x[train,], y = y[train], alpha=0.6, family="binomial")
+
+el_pred_min <- predict(el_fit, s = el_reg_cv$lambda.min, newx = x[test,])
+mean((el_pred_min - y.test)^2)
+
+el_pred_1se <- predict(el_fit, s = el_reg_cv$lambda.1se, newx = x[test,])
+mean((el_pred_1se - y.test)^2)
+
+# Select lambda.1se since MSE for lambda.1se is smaller than MSE for lambda.min
+el_pred_coeff <- predict(el_fit, s = el_reg_cv$lambda.1se, type = "coefficients")
+el_pred_coeff
+```
+
+```{r}
+# Removing 6 features that were deemed to either have low discriminatory power or high multicollinearity or can be reduced to 0 by lasso regularisation
+reducedData <- select(cleanData, -c(Gender, Departure.Arrival.time.convenient, Gate.location, Departure.Delay.in.Minutes, Customer.Type))
+```
+
+```{r}
+set.seed(3)
+
+for (i in 1:5){
+  sample <- reducedData[sample(nrow(reducedData), 2000), -ncol(reducedData)]
+  dist_gower <- daisy(sample, metric = "gower")
+  matrix <- as.matrix(dist_gower)
+  
+  classic_mds <- cmdscale(dist_gower, k=2)
+  colnames(classic_mds) <- c("D1", "D2")
+  
+  plot(classic_mds)
+  
+  # Write down the number of the original dimensions
+  nDimensions <- ncol(sample)
+  
+  # Prepare the vector with future stress values
+  mds_stress <- vector("numeric",nDimensions)
+  
+  for(i in 1:nDimensions){
+    # Do MDS
+    mds_test <- cmdscale(dist_gower, k=i)
+    # Produce dissimilarities matrix for the new dimensions
+    mds_dist <- daisy(mds_test,"gower")
+    # Calculate stress metrics
+    mds_stress[i] <- sqrt(sum((dist_gower - mds_dist)^2)/sum(dist_gower^2))
+  }
+    
+  plot(mds_stress)
+  
+}
+
+# For 10 repetitions with random sample size of 1000
+# 7 plots shows k=4 is the optimal
+# 3 plot shows k=2 is the optimal
+```
+
+```{r}
+# Optimal mds with entire data and optimal k value
+
+dist_gower_final <- daisy(reducedData[,-ncol(reducedData)], metric = "gower")
+matrix_final <- as.matrix(dist_gower_final)
+  
+classic_mds_final <- cmdscale(dist_gower_final, k=2)
+colnames(classic_mds_final) <- c("D1", "D2")
+  
+plot(classic_mds_final)
+
+df_final <- as.data.frame(classic_mds_final)
+
+ggplot(df_final, aes(x=D1, y=D2, color=cleanData$satisfaction)) +
+  geom_point()
+```
+
+```{r}
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Age))
+ggplot() +theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Type.of.Travel))
+ggplot() +theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Class))
+```
+
+```{r}
+ggplot() + theme(legend.position="bottom") + 
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Flight.Distance))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Arrival.Delay.in.Minutes))
+```
+
+```{r}
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Ease.of.Online.booking))
+ggplot() +theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Online.boarding))
+```
+
+```{r}
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Inflight.wifi.service))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Food.and.drink))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Seat.comfort))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Inflight.entertainment))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = On.board.service))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Leg.room.service))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Baggage.handling))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Checkin.service))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Inflight.service))
+ggplot() + theme(legend.position="bottom") +
+  geom_point(data = df_final_combined, aes(x = D1, y = D2, color = Cleanliness))
+```
+
+```{r}
+# Finding the correlation between the variables found through dimensional reduction and the original vairables in the data
+
+df_final_combined <- cbind(df_final,reducedData[,-ncol(reducedData)])
+
+assoc(df_final_combined)
+
+mds_d1 <- data.frame(D1 = df_final_combined$D1)
+mds_d1 <- cbind(mds_d1, x)
+
+mds_d2 <- data.frame(D2 = df_final_combined$D2)
+mds_d2 <- cbind(mds_d2, x)
+
+d1_simple <- glm(D1~1, data=mds_d1)
+d1_complex <- glm(D1~., data=mds_d1)
+stats::step(d1_simple, formula(d1_complex), direction="both", ic="AICc")
+
+d2_simple <- glm(D2~1, data=mds_d2)
+d2_complex <- glm(D2~., data=mds_d2)
+stats::step(d2_simple, formula(d2_complex), direction="both", ic="AICc")
+
+dim1 <- df_final_combined[,-2]
+dim2 <- df_final_combined[,-1]
+
+# D1 is highly correlated to inflight entertainment, class, online boarding and seat comfort
+# D2 is type of travel and class
+
+AMSmallest1 <- alm(D1~1, dim1) 
+AMLargest1 <- alm(D1~., dim1)
+AMBoth1 <- step(AMSmallest1, formula(AMLargest1), direction="both", ic="AICc")
+
+# ourModel1 <- alm(D1 ~ Inflight.entertainment + Class + Online.boarding + Type.of.Travel + Checkin.service + Seat.comfort + Inflight.service + Inflight.wifi.service + Food.and.drink + Leg.room.service + On.board.service + Cleanliness + Baggage.handling + Flight.Distance + Ease.of.Online.booking + Gate.location + Departure.Arrival.time.convenient + Customer.Type + Age, dim1)
+
+AirModelSmallest2 <- alm(D2~1, dim2) 
+AirModelLargest2 <- alm(D2~., dim2)
+AirModelBoth2 <- step(AirModelSmallest2, formula(AirModelLargest1), direction="both", ic="AICc")
+
+# ourModel2 <- alm(D2 ~ Type.of.Travel + Inflight.wifi.service + Inflight.entertainment + Departure.Arrival.time.convenient + Class + Gender + Online.boarding + Checkin.service + Customer.Type + Gate.location + Baggage.handling + Cleanliness + Flight.Distance + Leg.room.service + Food.and.drink + On.board.service + Ease.of.Online.booking + Seat.comfort + Inflight.service + Age + Departure.Delay.in.Minutes, dim2)
+
+```

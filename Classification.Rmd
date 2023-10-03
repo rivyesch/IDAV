@@ -1,0 +1,720 @@
+---
+title: "Modelling and Prediction"
+author: 'Rivyesch Ranjan'
+date: "2023-04-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Importing required libraries and functions for plotting
+library(greybox)
+library(dplyr)
+require(Information)
+library(corrplot)
+library(car)
+library(glmnet)
+library(cluster)
+library(caret)
+library(themis)
+library(pROC)
+library(BBmisc)
+library(class)
+library(e1071)
+library(FNN) 
+library(gmodels) 
+library(psych)
+library(themis)
+library(randomForest)
+library("faux")
+library("DataExplorer")
+library("caret")
+library(mlbench)
+source("Rfunctions.R")
+```
+
+Data Pre-processing
+
+```{r}
+# Read CSV file
+rawData <- read.csv("airlinesData81.csv", stringsAsFactors = TRUE)
+
+# Removing 5 features that were deemed to either have low discriminatory power or high multicollinearity or can be reduced to 0 by lasso regularisation
+reducedData <- select(rawData, -c(Gender, Departure.Arrival.time.convenient, Gate.location, Departure.Delay.in.Minutes, Customer.Type))
+
+# change all variable names to lowercase
+var.names.data <-tolower(colnames(reducedData))
+colnames(reducedData) <- var.names.data
+head(reducedData)
+
+# renaming variable names (columns)
+colnames(reducedData)[2]  <- "travel_type" 
+colnames(reducedData)[4]  <- "flight_dist" 
+colnames(reducedData)[5]  <- "wifi" 
+colnames(reducedData)[6]  <- "online_booking"
+colnames(reducedData)[7]  <- "food_drink" 
+colnames(reducedData)[8]  <- "online_boarding" 
+colnames(reducedData)[9]  <- "seat_comfort"
+colnames(reducedData)[10]  <- "entertainment"
+colnames(reducedData)[11]  <- "onboard_service" 
+colnames(reducedData)[12]  <- "leg_room" 
+colnames(reducedData)[13]  <- "baggage_handling" 
+colnames(reducedData)[14]  <- "checkin_service" 
+colnames(reducedData)[15]  <- "inflight_service" 
+colnames(reducedData)[17]  <- "arrival_delay" 
+
+# Check for missing values and removes rows with NA (initially only columns related to time contained NA values)
+cleanData <- na.omit(reducedData)
+
+# Column number of all factor variables (ordinal)
+factor_var <- c(5:16)
+
+# Replace 0 with NA in columns with factors (invalid choice since scale is from 1-5)
+cleanData[, factor_var] <- lapply(cleanData[, factor_var], function(x) ifelse(x == 0, NA, x))
+
+# Remove NAs which were initially factor 0 
+cleanData <- na.omit(cleanData)
+
+# Converting all ordinal feature columns to factors
+cleanData[,factor_var] <- lapply(cleanData[,factor_var] , as.ordered)
+
+# Fixing invalid class level
+levels(cleanData$satisfaction)[1] <- "neutral_dissatisfied"
+
+# Scale 'age' variable
+cleanData[,1] <- (cleanData[,1]-min(cleanData[,1])) /
+(max(cleanData[,1])-min(cleanData[,1]))
+
+# Scale 'flight_dist' variable
+cleanData[,4] <- (cleanData[,4]-min(cleanData[,4])) /
+(max(cleanData[,4])-min(cleanData[,4]))
+
+# Scale 'arrival_delay' variable
+cleanData[,17] <- (cleanData[,17]-min(cleanData[,17])) /
+(max(cleanData[,17])-min(cleanData[,17]))
+```
+
+```{r}
+# Create a Boolean variable that is TRUE when satisfaction = "satisfied"
+y <- 1 * (cleanData$satisfaction=="satisfied")
+
+# New variable that contains the target variable as 0s and 1s
+binomialData <- cleanData
+binomialData$satisfaction <- y
+```
+
+```{r}
+# Split into training and testing set (ratio 80:20)
+
+# Set a random seed for reproducibility
+set.seed(2023)
+
+obsAll <- nrow(cleanData)
+
+# Vector with indices for the train set
+trainSet <- sample(1:obsAll, 0.80*obsAll)
+
+# Test set. We select values that are not in the train set
+testSet <- (1:obsAll)[!(1:obsAll %in% trainSet)]
+```
+
+Subset Selection
+
+```{r}
+# Subset 1b: all variables except those that had multicollinearity and low IV (17 features)
+subset1b <- cbind(satisfaction=binomialData$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,binomialData)[,-1]))
+
+# Subset 2b: most important variables and potentially useful variables from MDS plots (13 features)
+subset2b <- select(binomialData,-c(age, online_booking, arrival_delay, checkin_service))
+subset2b <- cbind(satisfaction=subset2b$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset2b)[,-1]))
+
+# Subset 3b: Lasso/Elastic Net
+subset3b <- select(binomialData,-c(age, food_drink))
+subset3b <- cbind(satisfaction=subset3b$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset3b)[,-1]))
+```
+
+```{r}
+# Recursive Feature Elimination (RFE)
+
+# ensure the results are repeatable
+set.seed(7)
+
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(cleanData[trainSet,1:17], cleanData[trainSet,18], sizes=c(1:17), rfeControl=control)
+# summarize the results
+print(results)
+# list the chosen features
+predictors(results)
+# plot the results
+plot(results, type=c("g", "o"))
+
+# Print the results visually
+ggplot(data = results, metric = "Accuracy") + theme_bw()
+ggplot(data = results, metric = "Kappa") + theme_bw()
+
+# Subset 4b: variables selected through RFE algorithm (backward selection)
+subset4b <- select(binomialData,-c(food_drink, arrival_delay))
+subset4b <- cbind(satisfaction=subset4b$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset4b)[,-1]))
+
+varimp_data <- data.frame(feature = row.names(varImp(results))[1:8],
+                          importance = varImp(results)[1:8, 1])
+
+ggplot(data = varimp_data, 
+       aes(x = reorder(feature, -importance), y = importance, fill = feature)) +
+  geom_bar(stat="identity") + labs(x = "Features", y = "Variable Importance") + 
+  geom_text(aes(label = round(importance, 2)), vjust=1.6, color="white", size=4) + 
+  theme_bw() + theme(legend.position = "none")
+```
+
+Function to calculate accuracy of data (train or test) for different thresholds
+
+```{r}
+calculate_accuracy <- function(model, data, threshold) {
+  # Estimate probabilities of default
+  probs <- predict(model, newdata=data, type="response")
+  # Predict class 1 (i.e. default=Yes) if estimated probability > threshold
+  classPrediction <- 1*(probs > threshold)
+  # Create truth table: Rows represents actual class, Column represents predicted
+  truthTable <- table(actuals=data$satisfaction, prediction=classPrediction)
+  print(truthTable)
+  # Total number of observations in truthTable
+  N <- sum(truthTable)
+  # Misclassification error
+  misclassification_error <- (truthTable[1,2] + truthTable[2,1])/N
+  print(paste("Misclassification error:", misclassification_error))
+  # Accuracy = Proportion of correct predictions
+  accuracy <- (truthTable[1,1] + truthTable[2,2])/N
+  print(paste("Accuracy:", accuracy))
+  return(accuracy)
+}
+```
+
+Logistic Regression
+
+```{r}
+# Fit several logistic regression models (one for each subset)
+logitModel1 <- glm(satisfaction ~ ., data = subset1b, subset = trainSet ,family = binomial)
+summary(logitModel1)
+
+logitModel2 <- glm(satisfaction ~ ., data = subset2b, subset = trainSet, family = binomial)
+summary(logitModel2)
+
+logitModel3 <- glm(satisfaction ~ ., data = subset3b, subset = trainSet, family = binomial)
+summary(logitModel3)
+
+logitModel4 <- glm(satisfaction ~ ., data = subset4b, subset = trainSet, family = binomial)
+summary(logitModel4)
+```
+
+```{r}
+# Manual backward selection
+logitModel5_1 <- glm(satisfaction ~ ., data = binomialData, subset = trainSet ,family = binomial)
+summary(logitModel5_1)
+
+# Online booking removed
+logitModel5_2 <- glm(satisfaction ~ ., data = select(binomialData, - c(online_booking)), subset = trainSet ,family = binomial)
+summary(logitModel5_2)
+
+# Food and drink removed
+logitModel5_3 <- glm(satisfaction ~ ., data = select(binomialData, - c(online_booking, food_drink)), subset = trainSet ,family = binomial)
+summary(logitModel5_3)
+
+# Subset 5b:
+subset5b <- select(binomialData,-c(food_drink, online_booking))
+subset5b <- cbind(satisfaction=subset5b$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5b)[,-1]))
+
+logitModel5 <- glm(satisfaction ~ ., data = subset5b, subset = trainSet, family = binomial)
+```
+
+```{r}
+logitModels = list(logitModel1, logitModel2, logitModel3, logitModel4, logitModel5)
+subsets = list(subset1b, subset2b, subset3b, subset4b, subset5b)
+
+for (i in 1:5){
+  model = logitModels[[i]]
+  subset = subsets[[i]]
+
+  # Estimate probabilities of default
+  probs_train <- predict(model, type="response")
+  # Predict class 1 (i.e. default=Yes) if estimated probability > threshold (e.g. 0.5)
+  classPrediction_train <- 1*(probs_train > 0.5)
+  # Create truth table: Rows represents actual class, Column represents predicted
+  confMat_train <- table(actuals=subset[trainSet,]$satisfaction, prediction=classPrediction_train)
+  # Total number of observations in truthTable
+  N <- sum(confMat_train)
+  # Accuracy = Proportion of correct predictions
+  train_acc <- (confMat_train[1,1]+ confMat_train[2,2])/N
+  print(train_acc)
+
+  # Estimate probabilities of default
+  probs_test <- predict(model, newdata=subset[testSet,], type="response")
+  # Predict class 1 (i.e. default=Yes) if estimated probability > threshold (e.g. 0.5)
+  classPrediction_test <- 1*(probs_test > 0.5)
+  # Create truth table: Rows represents actual class, Column represents predicted
+  confMat_test <- table(actuals=subset[testSet,]$satisfaction, prediction=classPrediction_test)
+  # Calculate sensitivity and specificity
+  TP <- confMat_test[2, 2]
+  TN <- confMat_test[1, 1]
+  FP <- confMat_test[1, 2]
+  FN <- confMat_test[2, 1]
+  sensitivity <- TP / (TP + FN)
+  specificity <- TN / (TN + FP)
+  # Print sensitivity and specificity
+  cat("Sensitivity: ", sensitivity, "\n")
+  cat("Specificity: ", specificity, "\n")
+  # Total number of observations in confMat
+  N <- sum(confMat_test)
+  # Accuracy = Proportion of correct predictions
+  test_acc <- (confMat_test[1,1]+ confMat_test[2,2])/N
+  print(test_acc)
+}
+
+thresholds <- seq(0.35, 0.65, by = 0.1)
+for (threshold in thresholds){
+
+  # Estimate probabilities of default
+  probs_train <- predict(logitModel4, type="response")
+  # Predict class 1 (i.e. default=Yes) if estimated probability > threshold
+  classPrediction_train <- 1*(probs_train > threshold)
+  # Create truth table: Rows represents actual class, Column represents predicted
+  confMat_train <- table(actuals=subset4b[trainSet,]$satisfaction,prediction=classPrediction_train)
+  # Total number of observations in confMat
+  N <- sum(confMat_train)
+  # Accuracy = Proportion of correct predictions
+  train_acc <- (confMat_train[1,1]+ confMat_train[2,2])/N
+  print(train_acc)
+  
+  # Estimate probabilities of default
+  probs_test <- predict(logitModel4, newdata=subset4b[testSet,], type="response")
+  # Predict class 1 (i.e. default=Yes) if estimated probability > threshold (e.g. 0.5)
+  classPrediction_test <- 1*(probs_test > threshold)
+  # Create truth table: Rows represents actual class, Column represents predicted
+  confMat_test <- table(actuals=subset4b[testSet,]$satisfaction, prediction=classPrediction_test)
+  # Calculate sensitivity and specificity
+  TP <- confMat_test[2, 2]
+  TN <- confMat_test[1, 1]
+  FP <- confMat_test[1, 2]
+  FN <- confMat_test[2, 1]
+  sensitivity <- TP / (TP + FN)
+  specificity <- TN / (TN + FP)
+  # Print sensitivity and specificity
+  cat("Sensitivity: ", sensitivity, "\n")
+  cat("Specificity: ", specificity, "\n")
+  # Total number of observations in confMat
+  N <- sum(confMat_test)
+  # Accuracy = Proportion of correct predictions
+  test_acc <- (confMat_test[1,1]+ confMat_test[2,2])/N
+  print(test_acc)
+}
+```
+
+```{r}
+# Get estimates of parameters
+hb <- coef(logitModel1)
+
+# Order the response variable
+# This is needed to plot the values for 1 above the zero ones.
+satisfactionOrder <- order(dummyData$satisfaction)
+
+# Create variables for the scatterplot, order them
+x <- dummyData$Age[satisfactionOrder]
+y <-dummyData$Flight.Distance[satisfactionOrder]
+z <- dummyData$satisfaction[satisfactionOrder]
+
+# Scatterplot of income against balance using "defaulted" to colour data
+plot(x, y, col=c("grey","black")[z+1], pch=c(1,20)[z+1],
+xlab="Balance", ylab="Income")
+
+## Non-students
+# Decision boundary for threshold = 0.5
+abline(a=-hb[1]/hb[4], b=-hb[3]/hb[4], col="darkblue", lwd=2, lty=1)
+# Decision boundary for threshold = 0.1
+abline(a=(-hb[1]-log(1/0.1 - 1))/hb[4], b=-hb[3]/hb[4], col="darkblue", lwd=2, lty=2)
+
+## Students
+# Decision boundary for threshold = 0.5
+abline(a=-hb[1]/hb[4]+hb[2]/hb[4], b=-hb[3]/hb[4], col="darkred", lwd=2, lty=1)
+# Decision boundary for threshold = 0.1
+abline(a=(-hb[1]-log(1/0.1 - 1))/hb[4]+hb[2]/hb[4], b=-hb[3]/hb[4], col="darkred", lwd=2, lty=2)
+```
+
+k-Nearest Neighbours (k-NN)
+
+```{r}
+# ref: https://quantdev.ssri.psu.edu/sites/qdev/files/kNN_tutorial.html
+
+scaledData <- cleanData
+
+# Make Valid Column Names 
+colnames(scaledData) <- make.names(colnames(scaledData))
+```
+
+```{r}
+# Variable subsets
+
+# Subset 1: all variables except those that had multicollinearity and low IV (17 features)
+subset1 <- cbind(satisfaction=scaledData$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,scaledData)[,-1]))
+colnames(subset1) <- make.names(colnames(subset1))
+
+# Subset 2: most important variables and potentially useful variables from MDS plots (13 features)
+subset2 <- select(scaledData,-c(age, online_booking, arrival_delay, checkin_service))
+subset2 <- cbind(satisfaction=subset2$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset2)[,-1]))
+colnames(subset2) <- make.names(colnames(subset2))
+
+# Subset 3: Lasso/Elastic Net
+subset3 <- select(scaledData,-c(age, food_drink))
+subset3 <- cbind(satisfaction=subset3$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset3)[,-1]))
+colnames(subset3) <- make.names(colnames(subset3))
+
+# Subset 4: variables selected through RFE algorithm (backward selection)
+subset4 <- select(scaledData,-c(food_drink, arrival_delay))
+subset4 <- cbind(satisfaction=subset4$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset4)[,-1]))
+colnames(subset4) <- make.names(colnames(subset4))
+```
+
+```{r}
+knnModel5 <- knn3(satisfaction~., subset4, k=5, subset=trainSet)
+
+knnModel5PredictProb <- predict(knnModel5,
+newdata=subset4[testSet,],
+type="prob")
+
+head(knnModel5PredictProb, n=10)
+
+knnModel5Predict <- predict(knnModel5,
+newdata=subset4[testSet,],
+type="class")
+
+head(knnModel5Predict, n=10)
+
+confusionMatrix(knnModel5Predict,
+subset4$satisfaction[testSet])
+```
+
+```{r}
+# Set seed for reproducibility
+set.seed(41)
+
+# Control for cross validation
+knnTrainControl <- trainControl(method="repeatedcv", number=5,
+repeats=3, classProbs=TRUE,
+summaryFunction=twoClassSummary)
+
+# The training of k-NN
+knnTrain <- train(satisfaction~., data=subset5_8, method="knn",
+preProcess="scale", subset=trainSet,
+trControl = knnTrainControl,
+metric="ROC", tuneLength=10)
+
+knnTrain
+
+plot(knnTrain)
+
+# For the train set (experimenting for fun)
+knnModelPredict_train <- predict(knnTrain, newdata=subset5_8[trainSet,], type="raw")
+
+confusionMatrix(knnModelPredict_train,
+subset5_8$satisfaction[trainSet])
+
+# For the test set
+knnModelPredict_test <- predict(knnTrain, newdata=subset5_8[testSet,],
+type="raw")
+
+# head(knnModelPredict_test, 10)
+
+confusionMatrix(knnModelPredict_test,
+subset5_8$satisfaction[testSet])
+
+varImp(knnTrain) |>
+plot()
+```
+
+```{r}
+# Generate probabilities for the whole data
+knnTrainWholeProb <- predict(knnTrain, newdata=subset4[trainSet,], type="prob")
+knnTestWholeProb <- predict(knnTrain, newdata=subset4[testSet,], type="prob")
+
+thresholds <- seq(0.3, 0.7, by = 0.05)
+for (threshold in thresholds){
+  classPrediction_train <- 1*(knnTrainWholeProb[,2] > threshold)
+  confMat_train <- table(actuals=subset4[trainSet,]$satisfaction, prediction=classPrediction_train)
+  # Total number of observations in confMat
+  N <- sum(confMat_train)
+  # Accuracy = Proportion of correct predictions
+  train_acc <- (confMat_train[1,1]+ confMat_train[2,2])/N
+  print(train_acc)
+    
+  classPrediction_test <- 1*(knnTestWholeProb[,2] > threshold)
+  confMat_test <- table(actuals=subset4[testSet,]$satisfaction, prediction=classPrediction_test)
+    # Calculate sensitivity and specificity
+    TP <- confMat_test[2, 2]
+    TN <- confMat_test[1, 1]
+    FP <- confMat_test[1, 2]
+    FN <- confMat_test[2, 1]
+    sensitivity <- TP / (TP + FN)
+    specificity <- TN / (TN + FP)
+    # Print sensitivity and specificity
+    cat("Sensitivity: ", sensitivity, "\n")
+    cat("Specificity: ", specificity, "\n")
+    # Total number of observations in confMat
+    N <- sum(confMat_test)
+    # Accuracy = Proportion of correct predictions
+    test_acc <- (confMat_test[1,1]+ confMat_test[2,2])/N
+    print(test_acc)
+}
+```
+
+```{r}
+# Subset 5:
+subset5_1 <- select(scaledData,-c(food_drink))
+subset5_1 <- cbind(satisfaction=subset5_1$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_1)[,-1]))
+colnames(subset5_1) <- make.names(colnames(subset5_1))
+
+subset5_2 <- select(scaledData,-c(food_drink, arrival_delay))
+subset5_2 <- cbind(satisfaction=subset5_2$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_2)[,-1]))
+colnames(subset5_2) <- make.names(colnames(subset5_2))
+
+subset5_3 <- select(scaledData,-c(food_drink, arrival_delay, age))
+subset5_3 <- cbind(satisfaction=subset5_3$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_3)[,-1]))
+colnames(subset5_3) <- make.names(colnames(subset5_3))
+
+subset5_4 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking))
+subset5_4 <- cbind(satisfaction=subset5_4$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_4)[,-1]))
+colnames(subset5_4) <- make.names(colnames(subset5_4))
+
+subset5_5 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking, checkin_service))
+subset5_5 <- cbind(satisfaction=subset5_5$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_5)[,-1]))
+colnames(subset5_5) <- make.names(colnames(subset5_5))
+
+subset5_6 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking, checkin_service, inflight_service))
+subset5_6 <- cbind(satisfaction=subset5_6$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_6)[,-1]))
+colnames(subset5_6) <- make.names(colnames(subset5_6))
+
+subset5_7 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking, checkin_service, inflight_service, flight_dist))
+subset5_7 <- cbind(satisfaction=subset5_7$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_7)[,-1]))
+colnames(subset5_7) <- make.names(colnames(subset5_7))
+
+subset5_8 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking, checkin_service, inflight_service, flight_dist, baggage_handling))
+subset5_8 <- cbind(satisfaction=subset5_8$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_8)[,-1]))
+colnames(subset5_8) <- make.names(colnames(subset5_8))
+
+subset5_9 <- select(scaledData,-c(food_drink, arrival_delay, age, online_booking, checkin_service, flight_dist, baggage_handling, onboard_service, seat_comfort, cleanliness))
+subset5_9 <- cbind(satisfaction=subset5_9$satisfaction,
+as.data.frame(model.matrix(~.-satisfaction,subset5_9)[,-1]))
+colnames(subset5_9) <- make.names(colnames(subset5_9))
+```
+
+Decision Trees
+
+```{r}
+# Data has already been prepared, scaled and seperated into train and test in the previous section (using same data "scaledData")
+
+# Set seed for reproducibility
+set.seed(41)
+
+# colnames(subset5) <- make.names(colnames(subset5))
+
+# Control for cross validation
+trainControl <- trainControl(method="repeatedcv", number=5,
+repeats=3, classProbs=TRUE,
+summaryFunction=twoClassSummary)
+
+# The training of decision tree
+DTTrain <- train(satisfaction~., data=subset5_9[trainSet,],
+method="rpart",
+trControl=trainControl,
+metric="ROC", tuneLength=10)
+
+DTTrain
+
+plot(DTTrain)
+
+# For the train set
+DTPredict_train <- predict(DTTrain, newdata=subset5_9[trainSet,],
+type="raw")
+
+confusionMatrix(DTPredict_train, subset5_9[trainSet,]$satisfaction)
+
+# For the test set
+DTPredict_test <- predict(DTTrain, newdata=subset5_9[testSet,],
+type="raw")
+
+confusionMatrix(DTPredict_test, subset5_9[testSet,]$satisfaction)
+
+varImp(DTTrain) |>
+plot()
+```
+
+```{r}
+# Bagging
+
+# Set seed to train the model in the same way as before
+set.seed(41)
+
+# The training of k-NN
+DTBagTrain <- train(satisfaction~., data=subset5,
+method="treebag",
+trControl=trainControl,
+metric="ROC")
+
+DTBagTrain
+
+DTBagPredict_train <- predict(DTBagTrain, newdata=subset5[trainSet,],
+type="raw")
+
+confusionMatrix(DTBagPredict_train,
+subset5$satisfaction[trainSet])
+
+DTBagPredict_test <- predict(DTBagTrain, newdata=subset5[testSet,],
+type="raw")
+
+confusionMatrix(DTBagPredict_test,
+subset5[testSet,]$satisfaction)
+
+varImp(DTBagTrain) |>
+plot()
+```
+```{r}
+set.seed(41)
+baggingTrain <- train(satisfaction~., data = subset3[trainSet,], method = "treebag",
+                  trControl = trainControl, metric = "ROC",
+                  tuneLength = 10)
+
+baggingTrain
+
+dtModelPredict <- predict(baggingTrain, newdata = subset3[trainSet,], type = "raw")
+confusionMatrix(dtModelPredict, subset3[trainSet,]$satisfaction, positive = "satisfied")
+
+dtModelPredict <- predict(baggingTrain, newdata = subset3[testSet,], type = "raw")
+confusionMatrix(dtModelPredict, subset3[testSet,]$satisfaction, positive = "satisfied")
+plot(varImp(baggingTrain))
+
+baggingTrain$results$Spec
+baggingTrain$results$Sens
+```
+
+```{r}
+# Random Forest
+
+# Set seed to train the model in the same way as before
+set.seed(41)
+
+# The training of random forest
+RFTrain <- train(satisfaction~., data=subset4[trainSet,],
+method="rf",
+trControl=trainControl,
+metric="ROC")
+
+RFTrain
+
+RFPredict_train <- predict(RFTrain, newdata=subset4[trainSet,],
+type="raw")
+
+confusionMatrix(RFPredict_train,
+subset4$satisfaction[trainSet])
+
+RFPredict_test <- predict(RFTrain, newdata=subset4[testSet,],
+type="raw")
+
+# head(RFPredict, 10)
+
+confusionMatrix(RFPredict_test,
+subset4$satisfaction[testSet])
+
+varImp(RFTrain) |>
+plot()
+```
+
+```{r}
+set.seed(41)
+rf_train <- train(satisfaction~., data = subset1[trainSet,], method = "rf",
+                  trControl = trainControl, metric = "ROC",
+                  tuneLength = 10)
+
+plot(rf_train)
+
+rf_train
+rf_train$bestTune
+
+dtModelPredict <- predict(rf_train, newdata = subset1[trainSet,], type = "raw")
+confusionMatrix(dtModelPredict, subset1[trainSet,]$satisfaction, positive = "satisfied")
+
+dtModelPredict <- predict(rf_train, newdata = subset1[testSet,], type = "raw")
+confusionMatrix(dtModelPredict, subset1[testSet,]$satisfaction, positive = "satisfied")
+plot(varImp(rf_train))
+
+rf_train$results$Spec
+rf_train$results$Sens
+```
+
+Performance Evaluation
+
+```{r}
+# k-NN prediction
+knnModelProb <- predict(knnTrain, newdata=subset1[testSet,],
+type="prob")
+
+# Logit model
+logitModelProb <- predict(logitModel4,
+newdata=subset4b[testSet,],
+type="response")
+
+# DT
+DTPredict <- predict(DTTrain, newdata=subset5[testSet,],
+type="prob")
+
+# Bagging
+DTBagPredict <- predict(baggingTrain, newdata=subset3[testSet,],
+type="prob")
+
+# RF
+RFPredict <- predict(rf_train, newdata=subset1[testSet,],
+type="prob")
+
+# Generate ROC curves
+rocCurves <- vector("list", 5)
+
+# We only need the second column for the purposes of the analysis
+rocCurves[[1]] <- roc(subset1$satisfaction[testSet] ~ knnModelProb[,2])
+
+rocCurves[[2]] <- roc(subset4$satisfaction[testSet] ~ logitModelProb)
+
+rocCurves[[3]] <- roc(subset5$satisfaction[testSet] ~ DTPredict[,2])
+
+rocCurves[[4]] <- roc(subset5$satisfaction[testSet] ~ DTBagPredict[,2])
+
+rocCurves[[5]] <- roc(subset4$satisfaction[testSet] ~ RFPredict[,2])
+
+names(rocCurves) <- c("17-NN", "Logit", "DT", "DTBag", "RF")
+
+# par(mfrow=c(3,2))
+for(i in 1:5){
+  # Plot each of the ROC curves
+  plot(rocCurves[[i]], print.auc=TRUE, auc.polygon=TRUE,
+  mar=c(4,4,0,0), grid=TRUE)
+  # Add titles to plots
+  text(1.1, 0.9, names(rocCurves)[i])
+}
+```
